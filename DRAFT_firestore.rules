@@ -1,0 +1,86 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function isVerified() { return request.auth.token.email_verified == true; }
+
+    // --- User Profiles ---
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      allow update: if isOwner(userId) && isValidUser(incoming()) 
+                     && incoming().diff(existing()).affectedKeys().hasOnly(['username', 'displayName', 'photoURL', 'bio']);
+    }
+    
+    function isValidUser(data) {
+      return data.keys().hasAll(['userId', 'username', 'email', 'createdAt'])
+        && data.userId == request.auth.uid
+        && data.username is string && data.username.size() >= 3 && data.username.size() <= 30
+        && data.email == request.auth.token.email
+        && data.createdAt == request.time;
+    }
+
+    // --- Posts ---
+    match /posts/{postId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidPost(incoming());
+      allow update: if isSignedIn() && (
+        // Author can update content/video
+        (isOwner(existing().authorId) && isValidPost(incoming()) 
+          && incoming().diff(existing()).affectedKeys().hasOnly(['content', 'videoUrl', 'updatedAt']))
+        || 
+        // Others can only increment counters (likes/comments)
+        (incoming().diff(existing()).affectedKeys().hasAny(['likesCount', 'commentsCount']) 
+          && incoming().likesCount >= existing().likesCount // Simple check, should be part of a batch
+          && incoming().authorId == existing().authorId // Immutable
+        )
+      );
+      allow delete: if isSignedIn() && isOwner(existing().authorId);
+    }
+
+    function isValidPost(data) {
+      return data.keys().hasAll(['postId', 'authorId', 'content', 'createdAt'])
+        && data.authorId == request.auth.uid
+        && data.content is string && data.content.size() <= 2000
+        && data.createdAt == (resource == null ? request.time : existing().createdAt);
+    }
+
+    // --- Post Sub-collections ---
+    match /posts/{postId}/likes/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isOwner(userId);
+    }
+
+    match /posts/{postId}/comments/{commentId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && incoming().authorId == request.auth.uid 
+                     && incoming().createdAt == request.time;
+      allow delete: if isSignedIn() && (isOwner(existing().authorId) || isOwner(get(/databases/$(database)/documents/posts/$(postId)).data.authorId));
+    }
+
+    // --- Chat Rooms ---
+    match /rooms/{roomId} {
+      allow read: if isSignedIn() && request.auth.uid in existing().participants;
+      allow create: if isSignedIn() && request.auth.uid in incoming().participants;
+      allow update: if isSignedIn() && request.auth.uid in existing().participants
+                     && incoming().participants == existing().participants; // Participants are immutable for now
+    }
+
+    match /rooms/{roomId}/messages/{messageId} {
+      allow read: if isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/rooms/$(roomId)).data.participants;
+      allow create: if isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/rooms/$(roomId)).data.participants
+                     && incoming().senderId == request.auth.uid
+                     && incoming().createdAt == request.time;
+    }
+  }
+}

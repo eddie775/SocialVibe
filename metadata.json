@@ -1,0 +1,13 @@
+{
+  "name": "SocialVibe",
+  "description": "A modern social network with video sharing, real-time chat, and an interactive feed.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "social",
+    "chat",
+    "video"
+  ]
+}
